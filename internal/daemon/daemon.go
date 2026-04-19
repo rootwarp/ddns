@@ -67,10 +67,16 @@ func New(
 	}
 }
 
-// ReconcileOnce resolves the public IP once and reconciles Records[0]
-// against it. Multi-record fan-out lands in Phase 3 issue 3.6; the
-// reconcileRecord helper is already factored out so 3.6 is a one-line
-// change to the top-level loop.
+// ReconcileOnce resolves the public IP once and reconciles every
+// configured record against it. A failure on one record logs and persists
+// that record's error state but does NOT abort the fan-out — "all records
+// get their chance" per the PRD. The returned error is the first error
+// encountered (or nil), so ddns sync still exits non-zero if any record
+// failed.
+//
+// The resolver call is factored out of the per-record loop: all records
+// share the same observed IP per tick, which is what we want (a single
+// public IP maps to many hostnames).
 //
 // Error semantics: any returned error is appropriate for the loop to
 // classify — ErrNoQuorum and ErrTransient are "keep going", anything
@@ -80,15 +86,23 @@ func (d *Daemon) ReconcileOnce(ctx context.Context) error {
 	now := d.clock()
 	if err != nil {
 		d.log.Info("resolver_no_quorum", "report", report, "err", err.Error())
-		rec := d.cfg.Records[0]
-		d.persistError(ctx, now, "", err, rec.Name)
+		// Every record gets an error state so ddns status reflects the
+		// failure uniformly, not just for the first record.
+		for _, rec := range d.cfg.Records {
+			d.persistError(ctx, now, "", err, rec.Name)
+		}
 		return err
 	}
 	d.log.Info("ip_resolved", "ip", ip.String(), "quorum", report.Quorum)
 
-	rec := d.cfg.Records[0]
-	recLog := d.log.With("record", rec.Name)
-	return d.reconcileRecord(ctx, ip.String(), rec, recLog)
+	var firstErr error
+	for _, rec := range d.cfg.Records {
+		recLog := d.log.With("record", rec.Name)
+		if rerr := d.reconcileRecord(ctx, ip.String(), rec, recLog); rerr != nil && firstErr == nil {
+			firstErr = rerr
+		}
+	}
+	return firstErr
 }
 
 // reconcileRecord runs the per-record reconciliation body. It is extracted

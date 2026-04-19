@@ -400,6 +400,169 @@ func TestReconcileOnce_StateWritten_OnError(t *testing.T) {
 	}
 }
 
+// --- Phase 3 issue 3.6: multi-record fan-out ----------------------------
+
+// multiRecordConfig returns a config with two records, both in trailing-
+// dot form with default TTL. Fan-out tests use this shape.
+func multiRecordConfig() *config.Config {
+	return &config.Config{
+		PollInterval: 5 * time.Minute,
+		Records: []config.RecordConfig{
+			{Project: "p", ManagedZone: "z", Name: "alpha.example.com.", TTL: 300, Type: "A"},
+			{Project: "p", ManagedZone: "z", Name: "bravo.example.com.", TTL: 300, Type: "A"},
+		},
+	}
+}
+
+// TestReconcileOnce_MultipleRecords_AllSucceed — two records, both noop.
+// ReconcileOnce returns nil; the fake provider observed two Get calls and
+// zero Upserts.
+func TestReconcileOnce_MultipleRecords_AllSucceed(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	prov := fake.New()
+
+	// Seed both records with the expected value so they noop.
+	for _, rec := range cfg.Records {
+		if _, err := prov.Upsert(context.Background(), dnsprovider.RecordRef{
+			Project:     rec.Project,
+			ManagedZone: rec.ManagedZone,
+			Name:        rec.Name,
+			Type:        rec.Type,
+		}, dnsprovider.Record{Rrdatas: []string{"192.0.2.42"}, TTL: 300}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	prov.UpsertCallCount = 0 // reset post-seed so assertions are clean
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	if err := d.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if prov.UpsertCallCount != 0 {
+		t.Fatalf("UpsertCallCount = %d, want 0 (both noop)", prov.UpsertCallCount)
+	}
+	if prov.GetCallCount != len(cfg.Records) {
+		t.Fatalf("GetCallCount = %d, want %d", prov.GetCallCount, len(cfg.Records))
+	}
+
+	// Both records should have noop state persisted.
+	for _, rec := range cfg.Records {
+		st, err := store.Load(rec.Name)
+		if err != nil {
+			t.Fatalf("Load state for %s: %v", rec.Name, err)
+		}
+		if st.LastResult != "noop" {
+			t.Fatalf("record %s LastResult = %q, want noop", rec.Name, st.LastResult)
+		}
+	}
+}
+
+// selectiveErrorProvider wraps a fake.Provider and forces Upsert to fail
+// ONLY for the specified record name. Other records reconcile normally.
+// This is the surgical fault-injection we need to prove record B runs
+// even when record A fails.
+type selectiveErrorProvider struct {
+	inner       *fake.Provider
+	failOnName  string
+	failErr     error
+	upsertCalls map[string]int
+}
+
+func newSelectiveErrorProvider(inner *fake.Provider, failOnName string, failErr error) *selectiveErrorProvider {
+	return &selectiveErrorProvider{
+		inner:       inner,
+		failOnName:  failOnName,
+		failErr:     failErr,
+		upsertCalls: map[string]int{},
+	}
+}
+
+func (s *selectiveErrorProvider) Get(ctx context.Context, r dnsprovider.RecordRef) (dnsprovider.Record, error) {
+	return s.inner.Get(ctx, r)
+}
+
+func (s *selectiveErrorProvider) Upsert(ctx context.Context, r dnsprovider.RecordRef, rec dnsprovider.Record) (dnsprovider.UpsertResult, error) {
+	s.upsertCalls[r.Name]++
+	if r.Name == s.failOnName {
+		return dnsprovider.UpsertResult{}, s.failErr
+	}
+	return s.inner.Upsert(ctx, r, rec)
+}
+
+// TestReconcileOnce_MultipleRecords_OneFailsOthersContinue — Upsert fails
+// for record alpha; record bravo still reconciles. ReconcileOnce returns
+// alpha's error (the first one encountered).
+func TestReconcileOnce_MultipleRecords_OneFailsOthersContinue(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	base := fake.New()
+	sentinel := fmt.Errorf("alpha upsert fail: %w", ddnserr.ErrTransient)
+	prov := newSelectiveErrorProvider(base, cfg.Records[0].Name, sentinel)
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	err := d.ReconcileOnce(context.Background())
+	if err == nil {
+		t.Fatalf("ReconcileOnce: expected error, got nil")
+	}
+	if !errors.Is(err, ddnserr.ErrTransient) {
+		t.Fatalf("ReconcileOnce err = %v, want wrap of ErrTransient", err)
+	}
+	// Upsert was attempted for both records — record bravo got its chance.
+	if prov.upsertCalls[cfg.Records[0].Name] != 1 {
+		t.Fatalf("alpha Upsert calls = %d, want 1", prov.upsertCalls[cfg.Records[0].Name])
+	}
+	if prov.upsertCalls[cfg.Records[1].Name] != 1 {
+		t.Fatalf("bravo Upsert calls = %d, want 1 (second record got its chance)", prov.upsertCalls[cfg.Records[1].Name])
+	}
+
+	// Alpha has error state; bravo has updated state.
+	stAlpha, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load alpha state: %v", err)
+	}
+	if stAlpha.LastResult != "error" {
+		t.Fatalf("alpha LastResult = %q, want error", stAlpha.LastResult)
+	}
+	stBravo, err := store.Load(cfg.Records[1].Name)
+	if err != nil {
+		t.Fatalf("Load bravo state: %v", err)
+	}
+	if stBravo.LastResult != "updated" {
+		t.Fatalf("bravo LastResult = %q, want updated", stBravo.LastResult)
+	}
+}
+
+// TestReconcileOnce_MultipleRecords_ResolverFailFailsAll — resolver no-
+// quorum causes error state to be persisted for EVERY record, so ddns
+// status reflects the failure uniformly.
+func TestReconcileOnce_MultipleRecords_ResolverFailFailsAll(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	prov := fake.New()
+	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	err := d.ReconcileOnce(context.Background())
+	if err == nil || !errors.Is(err, ddnserr.ErrNoQuorum) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
+	}
+
+	for _, rec := range cfg.Records {
+		st, err := store.Load(rec.Name)
+		if err != nil {
+			t.Fatalf("Load state for %s: %v", rec.Name, err)
+		}
+		if st.LastResult != "error" {
+			t.Fatalf("record %s LastResult = %q, want error", rec.Name, st.LastResult)
+		}
+	}
+}
+
 func TestReconcileOnce_TTLChangeTriggersUpdate(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Records[0].TTL = 600
