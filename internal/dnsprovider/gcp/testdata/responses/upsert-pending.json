@@ -1,0 +1,15 @@
+{
+  "kind": "dns#change",
+  "id": "3",
+  "startTime": "2026-04-19T12:10:00.000Z",
+  "status": "pending",
+  "additions": [
+    {
+      "kind": "dns#resourceRecordSet",
+      "name": "home.example.com.",
+      "type": "A",
+      "ttl": 300,
+      "rrdatas": ["192.0.2.42"]
+    }
+  ]
+}

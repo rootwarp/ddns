@@ -1,0 +1,7 @@
+{
+  "kind": "dns#resourceRecordSet",
+  "name": "home.example.com.",
+  "type": "A",
+  "ttl": 300,
+  "rrdatas": ["198.51.100.7"]
+}
