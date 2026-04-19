@@ -38,7 +38,7 @@ func TestRun_FirstTickFiresImmediately(t *testing.T) {
 
 	prov := fake.New()
 	res := &countingResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
-	d := daemon.New(cfg, res, prov, discardLogger())
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -77,7 +77,7 @@ func TestRun_TickerDrivesSubsequentReconciles(t *testing.T) {
 
 	prov := fake.New()
 	res := &countingResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
-	d := daemon.New(cfg, res, prov, discardLogger())
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -116,7 +116,7 @@ func TestRun_FirstTickNoQuorumIsSwallowed(t *testing.T) {
 
 	prov := fake.New()
 	res := &countingResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
-	d := daemon.New(cfg, res, prov, discardLogger())
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -157,7 +157,7 @@ func TestRun_FirstTickAuthErrorPropagates(t *testing.T) {
 	// Force a Get that returns an ErrAuth — not Transient or NoQuorum.
 	prov.GetErr = fmt.Errorf("permission: %w", ddnserr.ErrAuth)
 	res := &countingResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
-	d := daemon.New(cfg, res, prov, discardLogger())
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -199,7 +199,7 @@ func TestRun_ContextCancelReturnsNil(t *testing.T) {
 		t.Fatalf("seed upsert: %v", err)
 	}
 	res := &countingResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
-	d := daemon.New(cfg, res, prov, discardLogger())
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 

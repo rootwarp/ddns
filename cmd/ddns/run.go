@@ -14,6 +14,7 @@ import (
 	"github.com/rootwarp/ddns/internal/dnsprovider/gcp"
 	"github.com/rootwarp/ddns/internal/logging"
 	"github.com/rootwarp/ddns/internal/resolver"
+	"github.com/rootwarp/ddns/internal/state"
 )
 
 // providerEnvVar is a TEST-ONLY escape hatch. When set to "fake", runAction
@@ -56,7 +57,8 @@ func runAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	res := resolver.New(cfg.Resolver)
-	d := daemon.New(cfg, res, provider, logger)
+	store := state.NewStore(cfg.StatePath)
+	d := daemon.New(cfg, res, provider, store, logger)
 	return d.Run(ctx)
 }
 
