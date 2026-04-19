@@ -39,12 +39,10 @@ func runAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	// Build the root logger. `record` is attached now (it's per-config
-	// invariant); Phase 3 may add per-tick record attrs when multi-record
-	// support lands.
-	logger := logging.
-		NewLogger(cfg.LogFormat, os.Stdout).
-		With("record", cfg.Records[0].Name)
+	// No `record` attr on the base logger: issue 3.6's multi-record
+	// support attaches per-record attrs inside reconcileRecord so each
+	// log line is scoped correctly.
+	logger := logging.NewLogger(cfg.LogFormat, os.Stdout)
 
 	logger.Info("startup",
 		"poll_interval", cfg.PollInterval.String(),

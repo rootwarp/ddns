@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"os"
 	"strings"
@@ -42,20 +41,6 @@ func TestVersionAction_PrintsVersionString(t *testing.T) {
 	})
 	if !strings.HasPrefix(strings.TrimSpace(out), "ddns ") {
 		t.Fatalf("versionAction stdout = %q, want prefix %q", out, "ddns ")
-	}
-}
-
-func assertExitCodeErr(t *testing.T, err error, wantCode int) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-	var ec cli.ExitCoder
-	if !errors.As(err, &ec) {
-		t.Fatalf("expected cli.ExitCoder, got %T: %v", err, err)
-	}
-	if got := ec.ExitCode(); got != wantCode {
-		t.Fatalf("ExitCode() = %d, want %d", got, wantCode)
 	}
 }
 

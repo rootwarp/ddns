@@ -32,9 +32,11 @@ func syncAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	logger := logging.
-		NewLogger(cfg.LogFormat, os.Stdout).
-		With("record", cfg.Records[0].Name)
+	// No `record` attr on the base logger: multi-record support (issue
+	// 3.6) attaches per-record attrs inside reconcileRecord so each log
+	// line is scoped correctly. A base-level `record` attr would shadow
+	// the per-record one in some handlers, producing duplicate keys.
+	logger := logging.NewLogger(cfg.LogFormat, os.Stdout)
 
 	provider, err := buildProvider(ctx)
 	if err != nil {

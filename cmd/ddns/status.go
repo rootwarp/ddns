@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -46,36 +47,47 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 // emitText walks records and prints a human-friendly block for each. The
 // timestamps are both absolute (RFC3339) and relative ("3m12s ago") so
 // operators at a glance can decide "is this fresh?".
-func emitText(w *os.File, store *state.Store, records []config.RecordConfig) error {
+//
+// Write errors are captured into a sticky variable so every Fprintf is
+// still called (no partial lines on an ErrShortWrite mid-block), but the
+// first error is propagated to the caller.
+func emitText(w io.Writer, store *state.Store, records []config.RecordConfig) error {
 	now := time.Now()
+	var werr error
+	write := func(format string, args ...any) {
+		if werr != nil {
+			return
+		}
+		_, werr = fmt.Fprintf(w, format, args...)
+	}
 	for _, rec := range records {
 		st, err := store.Load(rec.Name)
 		if errors.Is(err, ddnserr.ErrNotFound) {
-			fmt.Fprintf(w, "record: %s\n", rec.Name)
-			fmt.Fprintln(w, "  (no state recorded yet — ddns run / ddns sync has not completed a tick)")
+			write("record: %s\n", rec.Name)
+			write("  (no state recorded yet — ddns run / ddns sync has not completed a tick)\n")
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "record: %s\n", rec.Name)
-		fmt.Fprintf(w, "  last_observed_ip: %s\n", st.LastObservedIP)
-		fmt.Fprintf(w, "  last_checked:    %s%s\n", fmtTime(st.LastCheckedAt), fmtAgo(st.LastCheckedAt, now))
+		write("record: %s\n", rec.Name)
+		write("  last_observed_ip: %s\n", st.LastObservedIP)
+		write("  last_checked:    %s%s\n", fmtTime(st.LastCheckedAt), fmtAgo(st.LastCheckedAt, now))
 		if !st.LastUpdatedAt.IsZero() {
-			fmt.Fprintf(w, "  last_updated:    %s%s\n", fmtTime(st.LastUpdatedAt), fmtAgo(st.LastUpdatedAt, now))
+			write("  last_updated:    %s%s\n", fmtTime(st.LastUpdatedAt), fmtAgo(st.LastUpdatedAt, now))
 		}
-		fmt.Fprintf(w, "  last_result:     %s\n", st.LastResult)
+		write("  last_result:     %s\n", st.LastResult)
 		if st.LastError != "" {
-			fmt.Fprintf(w, "  last_error:      %s\n", st.LastError)
+			write("  last_error:      %s\n", st.LastError)
 		}
 	}
-	return nil
+	return werr
 }
 
 // emitJSON builds a single array of per-record State pointers (nil for no-
 // state-yet) and writes it to w. Pretty-printed so `jq .` and human
 // eyeballs agree.
-func emitJSON(w *os.File, store *state.Store, records []config.RecordConfig) error {
+func emitJSON(w io.Writer, store *state.Store, records []config.RecordConfig) error {
 	out := make([]*state.State, 0, len(records))
 	for _, rec := range records {
 		st, err := store.Load(rec.Name)
