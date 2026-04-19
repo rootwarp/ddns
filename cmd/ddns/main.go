@@ -48,7 +48,17 @@ func newRootCommand() *cli.Command {
 					},
 				},
 			},
-			{Name: "status", Usage: "print last-known state", Action: statusAction},
+			{
+				Name:   "status",
+				Usage:  "print last-known state",
+				Action: statusAction,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "json",
+						Usage: "emit the state as a JSON array (one element per record, null for no-state-yet)",
+					},
+				},
+			},
 			{Name: "version", Usage: "print version information", Action: versionAction},
 		},
 	}
