@@ -1,0 +1,594 @@
+package daemon_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/netip"
+	"testing"
+	"time"
+
+	"github.com/rootwarp/ddns/internal/config"
+	"github.com/rootwarp/ddns/internal/daemon"
+	"github.com/rootwarp/ddns/internal/ddnserr"
+	"github.com/rootwarp/ddns/internal/dnsprovider"
+	"github.com/rootwarp/ddns/internal/dnsprovider/fake"
+	"github.com/rootwarp/ddns/internal/resolver"
+	"github.com/rootwarp/ddns/internal/state"
+)
+
+// newStore returns a state.Store rooted at a temp directory whose cleanup
+// is tied to t. Phase 3 tests use it everywhere a Daemon is constructed.
+func newStore(t *testing.T) *state.Store {
+	t.Helper()
+	return state.NewStore(t.TempDir())
+}
+
+// fakeResolver is an inline test double for resolver.IPResolver. We keep it
+// here (not in the resolver package) because daemon tests are the only
+// consumer; a shared test double would be premature.
+type fakeResolver struct {
+	ip     netip.Addr
+	report resolver.ResolveReport
+	err    error
+	calls  int
+}
+
+func (f *fakeResolver) Resolve(_ context.Context) (netip.Addr, resolver.ResolveReport, error) {
+	f.calls++
+	return f.ip, f.report, f.err
+}
+
+// discardLogger is a logger that writes to io.Discard so test output stays
+// clean while the daemon still exercises its logging code paths.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
+func baseConfig() *config.Config {
+	return &config.Config{
+		PollInterval: 5 * time.Minute,
+		Records: []config.RecordConfig{{
+			Project:     "test-proj",
+			ManagedZone: "test-zone",
+			Name:        "home.example.com.",
+			TTL:         300,
+			Type:        "A",
+		}},
+	}
+}
+
+func mustAddr(t *testing.T, s string) netip.Addr {
+	t.Helper()
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		t.Fatalf("parse addr %q: %v", s, err)
+	}
+	return a
+}
+
+func TestReconcileOnce_NoOp(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	// Seed provider with the exact desired record.
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"192.0.2.42"},
+		TTL:     300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	upsertCallsBefore := prov.UpsertCallCount
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
+		t.Fatalf("Upsert calls after reconcile = %d, want 0 (no-op)", got)
+	}
+	if res.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", res.calls)
+	}
+}
+
+func TestReconcileOnce_CreatePath(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 2}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	got, err := prov.Get(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Get after reconcile: %v", err)
+	}
+	if len(got.Rrdatas) != 1 || got.Rrdatas[0] != "198.51.100.7" {
+		t.Fatalf("Rrdatas = %v, want [198.51.100.7]", got.Rrdatas)
+	}
+	if got.TTL != 300 {
+		t.Fatalf("TTL = %d, want 300", got.TTL)
+	}
+	if prov.UpsertCallCount != 1 {
+		t.Fatalf("UpsertCallCount = %d, want 1", prov.UpsertCallCount)
+	}
+}
+
+func TestReconcileOnce_UpdatePath(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	// Seed with the old IP.
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"203.0.113.1"},
+		TTL:     300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	upsertCallsBefore := prov.UpsertCallCount
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if prov.UpsertCallCount-upsertCallsBefore != 1 {
+		t.Fatalf("Upsert calls after reconcile = %d, want 1", prov.UpsertCallCount-upsertCallsBefore)
+	}
+	got, err := prov.Get(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Get after reconcile: %v", err)
+	}
+	if len(got.Rrdatas) != 1 || got.Rrdatas[0] != "192.0.2.42" {
+		t.Fatalf("Rrdatas = %v, want [192.0.2.42]", got.Rrdatas)
+	}
+}
+
+func TestReconcileOnce_ResolverNoQuorum(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil {
+		t.Fatalf("ReconcileOnce: expected error, got nil")
+	}
+	if !errors.Is(err, ddnserr.ErrNoQuorum) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
+	}
+	if prov.GetCallCount != 0 {
+		t.Fatalf("GetCallCount = %d, want 0 when resolver fails", prov.GetCallCount)
+	}
+	if prov.UpsertCallCount != 0 {
+		t.Fatalf("UpsertCallCount = %d, want 0 when resolver fails", prov.UpsertCallCount)
+	}
+}
+
+func TestReconcileOnce_ProviderTransient(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	prov.GetErr = fmt.Errorf("get flake: %w", ddnserr.ErrTransient)
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 2}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil {
+		t.Fatalf("ReconcileOnce: expected error, got nil")
+	}
+	if !errors.Is(err, ddnserr.ErrTransient) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrTransient", err)
+	}
+	if prov.UpsertCallCount != 0 {
+		t.Fatalf("UpsertCallCount = %d, want 0 when Get fails transiently", prov.UpsertCallCount)
+	}
+}
+
+func TestReconcileOnce_ProviderUpsertError(t *testing.T) {
+	cfg := baseConfig()
+	prov := fake.New()
+	prov.UpsertErr = fmt.Errorf("create flake: %w", ddnserr.ErrTransient)
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil {
+		t.Fatalf("ReconcileOnce: expected error, got nil")
+	}
+	if !errors.Is(err, ddnserr.ErrTransient) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrTransient", err)
+	}
+}
+
+// --- Phase 3 issue 3.3: state integration tests ------------------------
+
+// seedState writes a State fixture to the store under the given record
+// name. Tests use it to simulate "the daemon ran before and observed IP X".
+func seedState(t *testing.T, store *state.Store, recordName, ip, result string) {
+	t.Helper()
+	if err := store.Save(state.State{
+		RecordName:     recordName,
+		LastObservedIP: ip,
+		LastResult:     result,
+		LastCheckedAt:  time.Date(2026, 4, 19, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+}
+
+// TestReconcileOnce_StateMatchesLive_FastPathNoop — state says IP=X,
+// provider says IP=X, resolver says IP=X → no Upsert, state refreshed.
+func TestReconcileOnce_StateMatchesLive_FastPathNoop(t *testing.T) {
+	cfg := baseConfig()
+	store := newStore(t)
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"192.0.2.42"}, TTL: 300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	seedState(t, store, cfg.Records[0].Name, "192.0.2.42", "updated")
+	upsertCallsBefore := prov.UpsertCallCount
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
+		t.Fatalf("Upsert calls = %d, want 0 (fast-path noop)", got)
+	}
+
+	st, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load state: %v", err)
+	}
+	if st.LastResult != "noop" {
+		t.Fatalf("LastResult = %q, want noop", st.LastResult)
+	}
+	if st.LastObservedIP != "192.0.2.42" {
+		t.Fatalf("LastObservedIP = %q, want 192.0.2.42", st.LastObservedIP)
+	}
+}
+
+// TestReconcileOnce_StateStale_ProviderSays_DifferentIP — Fix H regression:
+// state=X, provider=Y, resolver=Y → no Upsert (live and desired already
+// agree), but state is refreshed to Y. The buggy noop gate in the issue
+// doc (which also required state.LastObservedIP == ip) would force an
+// unnecessary Upsert on this input.
+func TestReconcileOnce_StateStale_ProviderSays_DifferentIP(t *testing.T) {
+	cfg := baseConfig()
+	store := newStore(t)
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	// Provider already has Y (someone fixed it via gcloud).
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"198.51.100.7"}, TTL: 300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	// State still carries stale X.
+	seedState(t, store, cfg.Records[0].Name, "192.0.2.42", "updated")
+	upsertCallsBefore := prov.UpsertCallCount
+
+	// Resolver also sees Y.
+	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
+		t.Fatalf("Upsert calls = %d, want 0 (live already matches desired)", got)
+	}
+
+	// State must be refreshed to Y — the whole point of observability is
+	// that status never lies about the last-observed IP.
+	st, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load state: %v", err)
+	}
+	if st.LastObservedIP != "198.51.100.7" {
+		t.Fatalf("LastObservedIP = %q, want 198.51.100.7 (state refreshed)", st.LastObservedIP)
+	}
+	if st.LastResult != "noop" {
+		t.Fatalf("LastResult = %q, want noop", st.LastResult)
+	}
+}
+
+// TestReconcileOnce_StateStale_ResolverSays_DifferentIP — state=X,
+// provider=X, resolver=Y → Upsert fires with Y.
+func TestReconcileOnce_StateStale_ResolverSays_DifferentIP(t *testing.T) {
+	cfg := baseConfig()
+	store := newStore(t)
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"192.0.2.42"}, TTL: 300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	seedState(t, store, cfg.Records[0].Name, "192.0.2.42", "updated")
+	upsertCallsBefore := prov.UpsertCallCount
+
+	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if got := prov.UpsertCallCount - upsertCallsBefore; got != 1 {
+		t.Fatalf("Upsert calls = %d, want 1", got)
+	}
+
+	st, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load state: %v", err)
+	}
+	if st.LastObservedIP != "198.51.100.7" {
+		t.Fatalf("LastObservedIP = %q, want 198.51.100.7", st.LastObservedIP)
+	}
+	if st.LastResult != "updated" {
+		t.Fatalf("LastResult = %q, want updated", st.LastResult)
+	}
+}
+
+// TestReconcileOnce_StateWritten_OnError — resolver ErrNoQuorum causes a
+// state write with last_result=error (so ddns status shows the failure).
+func TestReconcileOnce_StateWritten_OnError(t *testing.T) {
+	cfg := baseConfig()
+	store := newStore(t)
+	prov := fake.New()
+	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil || !errors.Is(err, ddnserr.ErrNoQuorum) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
+	}
+
+	st, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load state: %v", err)
+	}
+	if st.LastResult != "error" {
+		t.Fatalf("LastResult = %q, want error", st.LastResult)
+	}
+	if st.LastError == "" {
+		t.Fatalf("LastError is empty; want the resolver error message")
+	}
+}
+
+// --- Phase 3 issue 3.6: multi-record fan-out ----------------------------
+
+// multiRecordConfig returns a config with two records, both in trailing-
+// dot form with default TTL. Fan-out tests use this shape.
+func multiRecordConfig() *config.Config {
+	return &config.Config{
+		PollInterval: 5 * time.Minute,
+		Records: []config.RecordConfig{
+			{Project: "p", ManagedZone: "z", Name: "alpha.example.com.", TTL: 300, Type: "A"},
+			{Project: "p", ManagedZone: "z", Name: "bravo.example.com.", TTL: 300, Type: "A"},
+		},
+	}
+}
+
+// TestReconcileOnce_MultipleRecords_AllSucceed — two records, both noop.
+// ReconcileOnce returns nil; the fake provider observed two Get calls and
+// zero Upserts.
+func TestReconcileOnce_MultipleRecords_AllSucceed(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	prov := fake.New()
+
+	// Seed both records with the expected value so they noop.
+	for _, rec := range cfg.Records {
+		if _, err := prov.Upsert(context.Background(), dnsprovider.RecordRef{
+			Project:     rec.Project,
+			ManagedZone: rec.ManagedZone,
+			Name:        rec.Name,
+			Type:        rec.Type,
+		}, dnsprovider.Record{Rrdatas: []string{"192.0.2.42"}, TTL: 300}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	prov.UpsertCallCount = 0 // reset post-seed so assertions are clean
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if prov.UpsertCallCount != 0 {
+		t.Fatalf("UpsertCallCount = %d, want 0 (both noop)", prov.UpsertCallCount)
+	}
+	if prov.GetCallCount != len(cfg.Records) {
+		t.Fatalf("GetCallCount = %d, want %d", prov.GetCallCount, len(cfg.Records))
+	}
+
+	// Both records should have noop state persisted.
+	for _, rec := range cfg.Records {
+		st, err := store.Load(rec.Name)
+		if err != nil {
+			t.Fatalf("Load state for %s: %v", rec.Name, err)
+		}
+		if st.LastResult != "noop" {
+			t.Fatalf("record %s LastResult = %q, want noop", rec.Name, st.LastResult)
+		}
+	}
+}
+
+// selectiveErrorProvider wraps a fake.Provider and forces Upsert to fail
+// ONLY for the specified record name. Other records reconcile normally.
+// This is the surgical fault-injection we need to prove record B runs
+// even when record A fails.
+type selectiveErrorProvider struct {
+	inner       *fake.Provider
+	failOnName  string
+	failErr     error
+	upsertCalls map[string]int
+}
+
+func newSelectiveErrorProvider(inner *fake.Provider, failOnName string, failErr error) *selectiveErrorProvider {
+	return &selectiveErrorProvider{
+		inner:       inner,
+		failOnName:  failOnName,
+		failErr:     failErr,
+		upsertCalls: map[string]int{},
+	}
+}
+
+func (s *selectiveErrorProvider) Get(ctx context.Context, r dnsprovider.RecordRef) (dnsprovider.Record, error) {
+	return s.inner.Get(ctx, r)
+}
+
+func (s *selectiveErrorProvider) Upsert(ctx context.Context, r dnsprovider.RecordRef, rec dnsprovider.Record) (dnsprovider.UpsertResult, error) {
+	s.upsertCalls[r.Name]++
+	if r.Name == s.failOnName {
+		return dnsprovider.UpsertResult{}, s.failErr
+	}
+	return s.inner.Upsert(ctx, r, rec)
+}
+
+// TestReconcileOnce_MultipleRecords_OneFailsOthersContinue — Upsert fails
+// for record alpha; record bravo still reconciles. ReconcileOnce returns
+// alpha's error (the first one encountered).
+func TestReconcileOnce_MultipleRecords_OneFailsOthersContinue(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	base := fake.New()
+	sentinel := fmt.Errorf("alpha upsert fail: %w", ddnserr.ErrTransient)
+	prov := newSelectiveErrorProvider(base, cfg.Records[0].Name, sentinel)
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil {
+		t.Fatalf("ReconcileOnce: expected error, got nil")
+	}
+	if !errors.Is(err, ddnserr.ErrTransient) {
+		t.Fatalf("ReconcileOnce err = %v, want wrap of ErrTransient", err)
+	}
+	// Upsert was attempted for both records — record bravo got its chance.
+	if prov.upsertCalls[cfg.Records[0].Name] != 1 {
+		t.Fatalf("alpha Upsert calls = %d, want 1", prov.upsertCalls[cfg.Records[0].Name])
+	}
+	if prov.upsertCalls[cfg.Records[1].Name] != 1 {
+		t.Fatalf("bravo Upsert calls = %d, want 1 (second record got its chance)", prov.upsertCalls[cfg.Records[1].Name])
+	}
+
+	// Alpha has error state; bravo has updated state.
+	stAlpha, err := store.Load(cfg.Records[0].Name)
+	if err != nil {
+		t.Fatalf("Load alpha state: %v", err)
+	}
+	if stAlpha.LastResult != "error" {
+		t.Fatalf("alpha LastResult = %q, want error", stAlpha.LastResult)
+	}
+	stBravo, err := store.Load(cfg.Records[1].Name)
+	if err != nil {
+		t.Fatalf("Load bravo state: %v", err)
+	}
+	if stBravo.LastResult != "updated" {
+		t.Fatalf("bravo LastResult = %q, want updated", stBravo.LastResult)
+	}
+}
+
+// TestReconcileOnce_MultipleRecords_ResolverFailFailsAll — resolver no-
+// quorum causes error state to be persisted for EVERY record, so ddns
+// status reflects the failure uniformly.
+func TestReconcileOnce_MultipleRecords_ResolverFailFailsAll(t *testing.T) {
+	cfg := multiRecordConfig()
+	store := newStore(t)
+	prov := fake.New()
+	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
+	d := daemon.New(cfg, res, prov, store, discardLogger())
+
+	err := d.ReconcileOnce(context.Background(), false)
+	if err == nil || !errors.Is(err, ddnserr.ErrNoQuorum) {
+		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
+	}
+
+	for _, rec := range cfg.Records {
+		st, err := store.Load(rec.Name)
+		if err != nil {
+			t.Fatalf("Load state for %s: %v", rec.Name, err)
+		}
+		if st.LastResult != "error" {
+			t.Fatalf("record %s LastResult = %q, want error", rec.Name, st.LastResult)
+		}
+	}
+}
+
+func TestReconcileOnce_TTLChangeTriggersUpdate(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Records[0].TTL = 600
+	prov := fake.New()
+	ref := dnsprovider.RecordRef{
+		Project:     cfg.Records[0].Project,
+		ManagedZone: cfg.Records[0].ManagedZone,
+		Name:        cfg.Records[0].Name,
+		Type:        cfg.Records[0].Type,
+	}
+	// Seed the rrdatas equal to what's desired but with a different TTL.
+	if _, err := prov.Upsert(context.Background(), ref, dnsprovider.Record{
+		Rrdatas: []string{"192.0.2.42"},
+		TTL:     300,
+	}); err != nil {
+		t.Fatalf("seed upsert: %v", err)
+	}
+	upsertCallsBefore := prov.UpsertCallCount
+
+	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
+	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
+
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
+		t.Fatalf("ReconcileOnce: %v", err)
+	}
+	if got := prov.UpsertCallCount - upsertCallsBefore; got != 1 {
+		t.Fatalf("Upsert calls after reconcile = %d, want 1 (TTL changed)", got)
+	}
+}

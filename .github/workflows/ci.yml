@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.26.x"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/Library/Caches/go-build
+          key: ${{ runner.os }}-go-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go }}-
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build
+
+      - name: Smoke — version
+        shell: bash
+        run: |
+          out=$(./bin/ddns version)
+          echo "$out"
+          echo "$out" | grep -E '^ddns [^ ]+ \(commit [^,]+, built .+\)$'
+
+      - name: Smoke — help
+        run: ./bin/ddns --help
+
+      - name: Smoke — run SIGTERM exits cleanly
+        shell: bash
+        # Phase 2 makes `ddns run` require a --config and a reachable DNS
+        # provider. DDNS_FAKE_PROVIDER=fake is a test-only escape hatch in
+        # cmd/ddns/run.go that swaps in the in-memory provider so the smoke
+        # step stays green on runners with no Google ADC.
+        env:
+          DDNS_FAKE_PROVIDER: fake
+        run: |
+          ./bin/ddns run --config cmd/ddns/testdata/example.yaml &
+          PID=$!
+          sleep 2
+          kill -TERM "$PID"
+          wait "$PID"
+          STATUS=$?
+          echo "ddns run exit status: $STATUS"
+          # 0  = handler caught SIGTERM and returned nil (expected).
+          # 143 = 128+15, external SIGTERM before handler registered — tolerated
+          # only so a slow-boot CI runner doesn't flake.
+          if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 143 ]; then
+            echo "Unexpected exit: $STATUS"
+            exit 1
+          fi

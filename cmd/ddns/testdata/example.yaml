@@ -1,0 +1,23 @@
+# Minimal valid config used by the smoke test (cmd/ddns/run_smoke_test.go)
+# and the CI "run SIGTERM exits cleanly" step. It is NOT intended to point at
+# a real Google Cloud DNS project: the smoke path sets DDNS_FAKE_PROVIDER=fake
+# so the binary wires up the in-memory fake and never calls ADC. Values here
+# only need to parse cleanly and satisfy internal/config validation.
+
+poll_interval: 1s
+state_path: /tmp/ddns-smoke
+log_format: json
+
+resolver:
+  sources:
+    - https://api.ipify.org
+    - https://ifconfig.me/ip
+  quorum: 1
+  timeout: 10s
+
+records:
+  - project: example-proj
+    managed_zone: example-zone
+    name: smoke.example.com.
+    type: A
+    ttl: 300

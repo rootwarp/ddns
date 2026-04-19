@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 404,
+    "message": "The 'parameters.name' resource named 'missing.example.com.' does not exist.",
+    "errors": [
+      {
+        "domain": "global",
+        "reason": "notFound",
+        "message": "The 'parameters.name' resource named 'missing.example.com.' does not exist."
+      }
+    ],
+    "status": "NOT_FOUND"
+  }
+}

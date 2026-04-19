@@ -1,0 +1,20 @@
+poll_interval: 5m
+
+resolver:
+  sources:
+    - https://api.ipify.org
+    - https://ifconfig.me/ip
+  quorum: 2
+  timeout: 10s
+
+records:
+  - project: my-home-lab
+    managed_zone: example-com
+    name: home.example.com.
+    type: A
+    ttl: 300
+  - project: my-home-lab
+    managed_zone: example-com
+    name: home.example.com
+    type: A
+    ttl: 600
