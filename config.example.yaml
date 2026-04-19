@@ -1,0 +1,107 @@
+# ddns sample configuration
+#
+# Copy to /etc/ddns/config.yaml (or any path you pass via --config / $DDNS_CONFIG)
+# and edit the fields marked REQUIRED. Everything else has a safe default — the
+# comments spell out what will be used if you omit the key entirely.
+#
+# See docs/getting-started-gcp.md for a step-by-step walk-through and
+# docs/log-events.md for the log taxonomy this config drives.
+
+# -----------------------------------------------------------------------------
+# Daemon cadence + housekeeping
+# -----------------------------------------------------------------------------
+
+# How often `ddns run` reconciles. `ddns sync` (one-shot) ignores this and runs
+# exactly one tick per invocation.
+# Default: 5m.  Accepts any Go time.Duration ("30s", "1m30s", "15m", "1h").
+# Each tick does: 3 HTTPS calls (echo services) + 1 Cloud DNS Get (sometimes
+# + 1 Changes.Create on drift). 5 minutes is the floor your ISP's IP-churn
+# rate is likely to tolerate; tighter rarely helps.
+poll_interval: 5m
+
+# Directory for per-record state files (one JSON per record, hashed name).
+# The directory and files are created mode 0700 / 0600 respectively.
+# Default: ~/.local/state/ddns.
+# Change this on a shared host or under systemd (e.g. /var/lib/ddns).
+state_path: /var/lib/ddns
+
+# Log format.
+#   "auto" → text when stdout is a TTY, JSON otherwise (recommended)
+#   "text" → human-readable key=value lines (good for `tail -f`)
+#   "json" → one JSON object per line (good for log aggregators)
+# Default: "auto".
+log_format: auto
+
+# -----------------------------------------------------------------------------
+# Public-IP resolver
+# -----------------------------------------------------------------------------
+# ddns asks multiple public "what is my IP" services in parallel and requires
+# quorum among them before accepting a value. This defeats a single compromised
+# or stale echo service from forcing a wrong update.
+
+resolver:
+  # Which HTTPS echo services to poll. Each must return a plain IPv4 address
+  # in the response body (<= 64 bytes).
+  # Default: the three listed below. Override to drop one that's blocked on
+  # your network, or add a fourth like https://checkip.amazonaws.com.
+  sources:
+    - https://api.ipify.org
+    - https://ifconfig.me/ip
+    - https://icanhazip.com
+
+  # Minimum number of agreeing sources before an IP is accepted.
+  # Default: 2. Must be >= 1 and <= len(sources).
+  # Rule of thumb: 2 of 3 balances resilience (one flaky service is fine) with
+  # security (an attacker needs to compromise two). 3 of 3 is too brittle.
+  quorum: 2
+
+  # Per-source HTTP timeout. The overall Resolve call waits at most this long
+  # for every source to answer; any source that doesn't finish counts as an
+  # error and is excluded from the quorum tally.
+  # Default: 10s.
+  timeout: 10s
+
+# -----------------------------------------------------------------------------
+# Records to manage
+# -----------------------------------------------------------------------------
+# REQUIRED. At least one record must be listed. Each record is reconciled
+# independently on every tick — a failure on one record does not stop the
+# others. All records share the same resolved IP per tick (one public IP, N
+# hostnames).
+
+records:
+  # Primary home hostname.
+  - project: my-home-lab                 # REQUIRED: GCP project ID
+    managed_zone: example-com            # REQUIRED: Cloud DNS managed-zone NAME
+                                         #   (the identifier you gave
+                                         #   `gcloud dns managed-zones create`,
+                                         #   NOT the DNS domain).
+    name: home.example.com.              # REQUIRED: FQDN, trailing dot required.
+                                         #   `home.example.com` also accepted;
+                                         #   ddns normalizes internally.
+    type: A                              # Default: "A". v1 only supports A.
+    ttl: 300                             # Default: 300. Range 30..86400.
+
+  # Additional records in the same zone; uncomment and edit if you have more
+  # than one hostname pointing at the same host. Remove the block if you only
+  # have one record.
+  # - project: my-home-lab
+  #   managed_zone: example-com
+  #   name: git.example.com.
+  #   type: A
+  #   ttl: 300
+  #
+  # - project: my-home-lab
+  #   managed_zone: example-com
+  #   name: media.example.com.
+  #   type: A
+  #   ttl: 600
+
+# -----------------------------------------------------------------------------
+# Reserved for v1.1 (Phase 7). Ignored by v1.0.
+# -----------------------------------------------------------------------------
+# health_addr: ""          # e.g. "127.0.0.1:8080" to enable /healthz /readyz /metrics
+# webhook:                  # post-update webhook
+#   url: https://example.com/ddns-hook
+#   secret: env:DDNS_WEBHOOK_SECRET
+#   timeout: 10s
