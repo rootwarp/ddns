@@ -1,0 +1,39 @@
+# ddns reference deployment — Docker Compose.
+#
+# Expected layout in the working directory:
+#   ./docker-compose.yml        (this file)
+#   ./config.yaml               (bind-mounted read-only to /etc/ddns/config.yaml)
+#   ./credentials.json          (GCP service-account JSON, bind-mounted read-only)
+#
+# In config.yaml, set `state_path: /var/lib/ddns` so the per-record state
+# files land inside the named volume below and survive container recreation.
+#
+# Bring up:
+#   docker compose up -d
+#   docker logs -f ddns
+#
+# Reload config (edits to ./config.yaml) without a restart:
+#   docker kill -s HUP ddns
+#
+# See docs/operations.md for day-two procedures (resync, key rotation,
+# state migration).
+
+services:
+  ddns:
+    image: ghcr.io/rootwarp/ddns:latest
+    container_name: ddns
+    restart: unless-stopped
+    environment:
+      # JSON logs are the only sensible format when `docker logs` is the
+      # consumer — they stay greppable and aggregator-friendly.
+      DDNS_LOG_FORMAT: json
+      # ADC picks this up automatically; no flag on ddns itself needed.
+      GOOGLE_APPLICATION_CREDENTIALS: /etc/ddns/credentials.json
+    volumes:
+      - ./config.yaml:/etc/ddns/config.yaml:ro
+      - ./credentials.json:/etc/ddns/credentials.json:ro
+      - ddns-state:/var/lib/ddns
+    command: ["run", "--config", "/etc/ddns/config.yaml"]
+
+volumes:
+  ddns-state:
