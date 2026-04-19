@@ -60,7 +60,7 @@ lint:
 	@if command -v golangci-lint >/dev/null 2>&1; then \
 		golangci-lint run; \
 	else \
-		echo "golangci-lint not found; install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "golangci-lint not found; install with: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4"; \
 	fi
 
 install:
