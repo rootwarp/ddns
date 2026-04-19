@@ -22,10 +22,10 @@ import (
 //   - ReconcileOnce returns provider error (wraps ErrTransient) → 2
 //   - success → 0
 //
-// The --dry-run flag is declared here so the help text documents it, but
-// Phase 3 does NOT honor it — Phase 4 issue 4.1 threads it into
-// ReconcileOnce so the daemon logs the would-be payload instead of calling
-// Upsert.
+// Phase 4 issue 4.1 makes --dry-run a first-class feature: when set, the
+// daemon emits reconcile_dry_run with the would-be payload instead of
+// calling provider.Upsert, and persists state with last_result=noop so a
+// subsequent non-dry-run sync still issues the update.
 func syncAction(ctx context.Context, cmd *cli.Command) error {
 	cfg, err := config.Load(cmd.String("config"))
 	if err != nil {
@@ -47,10 +47,11 @@ func syncAction(ctx context.Context, cmd *cli.Command) error {
 	store := state.NewStore(cfg.StatePath)
 	d := daemon.New(cfg, res, provider, store, logger)
 
-	// --dry-run is read here so urfave/cli doesn't complain about an
-	// unused declared flag, and so future readers can find the exact
-	// spot where Phase 4 will plumb it through.
-	_ = cmd.Bool("dry-run")
-
-	return d.ReconcileOnce(ctx)
+	dryRun := cmd.Bool("dry-run")
+	if dryRun {
+		// Prominent startup banner so operators immediately see that
+		// this sync will NOT mutate DNS. Documented in docs/log-events.md.
+		logger.Info("dry_run_mode_active")
+	}
+	return d.ReconcileOnce(ctx, dryRun)
 }

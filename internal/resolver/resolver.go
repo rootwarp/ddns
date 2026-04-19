@@ -9,9 +9,11 @@
 //     completion or timeout so we maximize the chance of reaching quorum.
 //   - Per-source response bodies are bounded to 64 bytes via io.LimitReader
 //     to guard against a misbehaving service streaming megabytes at us.
-//   - In Phase 2 only !addr.Is4() and parse failures are rejected per-source.
-//     Private / loopback / CGNAT / link-local rejection lands in Phase 4
-//     issue 4.3 — do not pre-empt it here.
+//   - Per-source responses are additionally sanity-rejected if they fall
+//     inside any RFC 1918 / loopback / link-local / CGNAT / multicast /
+//     benchmark prefix (see sanitize.go). The rejected source's Error
+//     becomes sanitize_reject:in_<prefix> and the address is not counted
+//     toward quorum.
 //   - The tally picks the IP with the most agreeing sources; if that count
 //     is below cfg.Quorum, Resolve returns ddnserr.ErrNoQuorum along with
 //     the full ResolveReport so callers can log per-source outcomes.
@@ -197,6 +199,18 @@ func (r *Resolver) fetchOne(ctx context.Context, url string) SourceResult {
 	}
 	if !addr.Is4() {
 		result.Error = fmt.Sprintf("not_ipv4: %s", addr.String())
+		result.ElapsedMs = time.Since(started).Milliseconds()
+		return result
+	}
+
+	// Sanity-reject private/loopback/CGNAT/link-local/multicast/benchmark
+	// addresses. A successful HTTP response containing such an address is
+	// never a legitimate public IP for this daemon; the most likely cause
+	// is an echo service misbehaving or being proxied by a middlebox that
+	// stripped the real client address. See internal/resolver/sanitize.go
+	// for the full prefix list.
+	if ok, reason := sanitize(addr); !ok {
+		result.Error = "sanitize_reject:" + reason
 		result.ElapsedMs = time.Since(started).Milliseconds()
 		return result
 	}

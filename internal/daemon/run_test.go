@@ -44,7 +44,7 @@ func TestRun_FirstTickFiresImmediately(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	go func() { done <- d.Run(ctx, false) }()
 
 	// Wait for the first Resolve call.
 	deadline := time.Now().Add(2 * time.Second)
@@ -83,7 +83,7 @@ func TestRun_TickerDrivesSubsequentReconciles(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	go func() { done <- d.Run(ctx, false) }()
 
 	// Expect >=3 ticks within ~300ms (immediate + two ticker fires).
 	deadline := time.Now().Add(time.Second)
@@ -122,7 +122,7 @@ func TestRun_FirstTickNoQuorumIsSwallowed(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	go func() { done <- d.Run(ctx, false) }()
 
 	// Wait for the first Resolve call (proof the loop ran its first tick).
 	deadline := time.Now().Add(2 * time.Second)
@@ -163,7 +163,7 @@ func TestRun_FirstTickAuthErrorPropagates(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	go func() { done <- d.Run(ctx, false) }()
 
 	select {
 	case err := <-done:
@@ -204,7 +204,7 @@ func TestRun_ContextCancelReturnsNil(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
-	go func() { done <- d.Run(ctx) }()
+	go func() { done <- d.Run(ctx, false) }()
 
 	time.Sleep(80 * time.Millisecond)
 	cancel()

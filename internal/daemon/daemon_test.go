@@ -90,7 +90,7 @@ func TestReconcileOnce_NoOp(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
@@ -107,7 +107,7 @@ func TestReconcileOnce_CreatePath(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 2}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestReconcileOnce_UpdatePath(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if prov.UpsertCallCount-upsertCallsBefore != 1 {
@@ -174,7 +174,7 @@ func TestReconcileOnce_ResolverNoQuorum(t *testing.T) {
 	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil {
 		t.Fatalf("ReconcileOnce: expected error, got nil")
 	}
@@ -196,7 +196,7 @@ func TestReconcileOnce_ProviderTransient(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 2}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil {
 		t.Fatalf("ReconcileOnce: expected error, got nil")
 	}
@@ -215,7 +215,7 @@ func TestReconcileOnce_ProviderUpsertError(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil {
 		t.Fatalf("ReconcileOnce: expected error, got nil")
 	}
@@ -263,7 +263,7 @@ func TestReconcileOnce_StateMatchesLive_FastPathNoop(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
@@ -311,7 +311,7 @@ func TestReconcileOnce_StateStale_ProviderSays_DifferentIP(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if got := prov.UpsertCallCount - upsertCallsBefore; got != 0 {
@@ -355,7 +355,7 @@ func TestReconcileOnce_StateStale_ResolverSays_DifferentIP(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "198.51.100.7"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if got := prov.UpsertCallCount - upsertCallsBefore; got != 1 {
@@ -383,7 +383,7 @@ func TestReconcileOnce_StateWritten_OnError(t *testing.T) {
 	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil || !errors.Is(err, ddnserr.ErrNoQuorum) {
 		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
 	}
@@ -438,7 +438,7 @@ func TestReconcileOnce_MultipleRecords_AllSucceed(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if prov.UpsertCallCount != 0 {
@@ -505,7 +505,7 @@ func TestReconcileOnce_MultipleRecords_OneFailsOthersContinue(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil {
 		t.Fatalf("ReconcileOnce: expected error, got nil")
 	}
@@ -547,7 +547,7 @@ func TestReconcileOnce_MultipleRecords_ResolverFailFailsAll(t *testing.T) {
 	res := &fakeResolver{err: fmt.Errorf("resolver: %w", ddnserr.ErrNoQuorum)}
 	d := daemon.New(cfg, res, prov, store, discardLogger())
 
-	err := d.ReconcileOnce(context.Background())
+	err := d.ReconcileOnce(context.Background(), false)
 	if err == nil || !errors.Is(err, ddnserr.ErrNoQuorum) {
 		t.Fatalf("ReconcileOnce err = %v, want ErrNoQuorum", err)
 	}
@@ -585,7 +585,7 @@ func TestReconcileOnce_TTLChangeTriggersUpdate(t *testing.T) {
 	res := &fakeResolver{ip: mustAddr(t, "192.0.2.42"), report: resolver.ResolveReport{Quorum: 3}}
 	d := daemon.New(cfg, res, prov, newStore(t), discardLogger())
 
-	if err := d.ReconcileOnce(context.Background()); err != nil {
+	if err := d.ReconcileOnce(context.Background(), false); err != nil {
 		t.Fatalf("ReconcileOnce: %v", err)
 	}
 	if got := prov.UpsertCallCount - upsertCallsBefore; got != 1 {
