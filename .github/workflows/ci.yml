@@ -41,7 +41,9 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        # Must use the v2 module path; the v1 path (github.com/golangci/golangci-lint/cmd/...)
+        # resolves to v1.64.x which rejects our v2-schema .golangci.yml.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
 
       - name: Lint
         run: make lint
@@ -85,3 +87,38 @@ jobs:
             echo "Unexpected exit: $STATUS"
             exit 1
           fi
+
+  docker:
+    name: docker
+    # Linux-only: macOS GitHub-hosted runners do not ship a working Docker
+    # daemon by default, and Phase 5 deployment shape is Linux containers.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          docker build \
+            -t ddns:ci \
+            -f deploy/docker/Dockerfile \
+            --build-arg VERSION=ci \
+            --build-arg "COMMIT=${GITHUB_SHA::7}" \
+            --build-arg "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            .
+
+      - name: Smoke — container version
+        shell: bash
+        run: |
+          out=$(docker run --rm ddns:ci version)
+          echo "$out"
+          # Must start with "ddns " (distinguishes real version output from
+          # urfave/cli help text or an unexpected panic).
+          echo "$out" | grep -E '^ddns '
+
+      - name: Report image size
+        # Informational: Phase 5 targets <30 MB. CI does not fail the job
+        # on size alone — image size is tracked in the release-gate runbook.
+        run: |
+          docker images ddns:ci --format 'ddns:ci size={{.Size}}'

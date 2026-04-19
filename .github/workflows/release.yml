@@ -1,0 +1,66 @@
+name: release
+
+# Tag-driven release: every v*.*.* tag pushed to the repo triggers GoReleaser,
+# which cross-compiles Linux amd64 + arm64 binaries, builds and pushes the
+# multi-arch Docker image to ghcr.io/rootwarp/ddns, generates an SBOM per
+# archive, and publishes the GitHub Release page. See .goreleaser.yaml for
+# the artifact spec and plan/bootstrap/release-gate-runbook.md for the
+# human checklist around each tag.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write      # GoReleaser needs this to publish the GitHub Release.
+  packages: write      # ghcr.io push auth.
+  id-token: write      # Reserved for cosign keyless signing (Phase 8);
+                       # harmless today, avoids a perms edit when we add it.
+
+jobs:
+  goreleaser:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # GoReleaser walks the git history to build the changelog between
+          # this tag and the previous one; a shallow clone truncates that.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Set up QEMU
+        # Required so the linux/arm64 Docker image can be built on the
+        # linux/amd64 runner.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install syft for SBOM generation
+        # goreleaser's `sboms` pipe shells out to `syft` but does not
+        # install it; the GoReleaser Action intentionally stays minimal.
+        # This step puts `syft` on $PATH before the release step runs.
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
