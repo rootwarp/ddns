@@ -1,0 +1,17 @@
+poll_interval: 5m
+
+# Problem 1: quorum > len(sources)
+# Problem 2: record has invalid type
+# Problem 3: record has empty project
+resolver:
+  sources:
+    - https://api.ipify.org
+  quorum: 3
+  timeout: 10s
+
+records:
+  - project: ""
+    managed_zone: example-com
+    name: home.example.com
+    type: AAAA
+    ttl: 300

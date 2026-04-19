@@ -1,0 +1,10 @@
+poll_interval: 5m
+
+resolver:
+  sources:
+    - https://api.ipify.org
+    - https://ifconfig.me/ip
+  quorum: 2
+  timeout: 10s
+
+records: []

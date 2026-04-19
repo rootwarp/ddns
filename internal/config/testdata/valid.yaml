@@ -1,0 +1,18 @@
+poll_interval: 5m
+state_path: ~/.local/state/ddns
+log_format: auto
+
+resolver:
+  sources:
+    - https://api.ipify.org
+    - https://ifconfig.me/ip
+    - https://icanhazip.com
+  quorum: 2
+  timeout: 10s
+
+records:
+  - project: my-home-lab
+    managed_zone: example-com
+    name: home.example.com.
+    type: A
+    ttl: 300
