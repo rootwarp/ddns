@@ -1,0 +1,155 @@
+# GoReleaser config for ddns.
+#
+# Produces:
+#   - Linux amd64 + arm64 binaries (static, -trimpath, stripped, version-injected)
+#   - tar.gz archives per arch bundled with README, LICENSE, config.example.yaml,
+#     the deploy/ tree (Dockerfile + compose), and the docs/ tree
+#   - Per-arch Docker images on ghcr.io/rootwarp/ddns
+#   - Multi-arch manifests :{{.Version}} and :latest
+#   - checksums.txt over the archives
+#   - CycloneDX SBOM per archive (via syft, installed by the GH Actions runner)
+#   - GitHub Release with changelog grouped by conventional-commit type
+#
+# Local snapshot smoke test:
+#   goreleaser check
+#   goreleaser release --snapshot --clean --skip=publish
+#
+# Reference: https://goreleaser.com/customization/
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ddns
+    main: ./cmd/ddns
+    binary: ddns
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/rootwarp/ddns/internal/version.Version={{.Version}}
+      - -X github.com/rootwarp/ddns/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/rootwarp/ddns/internal/version.BuildDate={{.Date}}
+
+archives:
+  - id: tarball
+    formats:
+      - tar.gz
+    name_template: "ddns_{{.Version}}_{{.Os}}_{{.Arch}}"
+    files:
+      - README.md
+      - LICENSE
+      - config.example.yaml
+      # GoReleaser v2's archive glob walks entries relative to the repo root
+      # and drops the matched prefix into `dst`; `strip_parent: false`
+      # preserves the sub-tree shape so `deploy/docker/Dockerfile` lands at
+      # `deploy/docker/Dockerfile` inside the tarball, not flattened to
+      # `deploy/Dockerfile`.
+      - src: deploy/docker/*
+        dst: deploy/docker
+        strip_parent: true
+      - src: docs/*.md
+        dst: docs
+        strip_parent: true
+
+dockers:
+  - image_templates:
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-amd64"
+    goos: linux
+    goarch: amd64
+    use: buildx
+    dockerfile: deploy/docker/Dockerfile
+    # The Dockerfile is multi-stage and compiles inside the image, so it
+    # needs the full source tree as build context. Extra_files here is
+    # belt-and-suspenders — the default context is the repo root, but being
+    # explicit prevents a surprise when a Phase 8 change adds files.
+    extra_files:
+      - cmd
+      - internal
+      - go.mod
+      - go.sum
+      - deploy
+    build_flag_templates:
+      - --platform=linux/amd64
+      - --label=org.opencontainers.image.source=https://github.com/rootwarp/ddns
+      - --label=org.opencontainers.image.version={{.Version}}
+      - --label=org.opencontainers.image.revision={{.FullCommit}}
+      - --label=org.opencontainers.image.created={{.Date}}
+      - --build-arg=VERSION={{.Version}}
+      - --build-arg=COMMIT={{.ShortCommit}}
+      - --build-arg=BUILD_DATE={{.Date}}
+  - image_templates:
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-arm64"
+    goos: linux
+    goarch: arm64
+    use: buildx
+    dockerfile: deploy/docker/Dockerfile
+    extra_files:
+      - cmd
+      - internal
+      - go.mod
+      - go.sum
+      - deploy
+    build_flag_templates:
+      - --platform=linux/arm64
+      - --label=org.opencontainers.image.source=https://github.com/rootwarp/ddns
+      - --label=org.opencontainers.image.version={{.Version}}
+      - --label=org.opencontainers.image.revision={{.FullCommit}}
+      - --label=org.opencontainers.image.created={{.Date}}
+      - --build-arg=VERSION={{.Version}}
+      - --build-arg=COMMIT={{.ShortCommit}}
+      - --build-arg=BUILD_DATE={{.Date}}
+
+docker_manifests:
+  - name_template: "ghcr.io/rootwarp/ddns:{{.Version}}"
+    image_templates:
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-amd64"
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-arm64"
+  - name_template: "ghcr.io/rootwarp/ddns:latest"
+    image_templates:
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-amd64"
+      - "ghcr.io/rootwarp/ddns:{{.Version}}-arm64"
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - id: archive-sbom
+    artifacts: archive
+    # Emit CycloneDX-JSON per tarball. Default is SPDX — we pick CycloneDX
+    # because it's the OWASP-maintained spec and downstream tooling
+    # (Dependency-Track, Trivy) reads it without conversion.
+    documents:
+      - "{{ .ArtifactName }}.cdx.json"
+    cmd: syft
+    args:
+      - "$artifact"
+      - "--output"
+      - "cyclonedx-json=$document"
+
+changelog:
+  use: github
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: Fixes
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  # GoReleaser auto-flags tags containing a hyphen (e.g. v1.0.0-rc1) as
+  # prereleases; leave the default behaviour.
+  draft: false
