@@ -1,7 +1,46 @@
 # ddns
 
-Dynamic DNS updater for Google Cloud DNS. `ddns run` reconciles a single `A`
-record against the host's current public IPv4 on a polling interval.
+Dynamic DNS updater for Google Cloud DNS. `ddns run` reconciles one or more
+`A` records against the host's current public IPv4 on a polling interval.
+`ddns sync` is the one-shot variant suitable for `cron`. `ddns status`
+prints the last-observed state.
+
+- **Status:** walking-skeleton-through-hardening complete on `develop`; `v1.0.0`
+  release is Phase 5–6 away.
+- **Supported providers:** Google Cloud DNS (Cloudflare in v1.1).
+- **Supported record types:** `A` (IPv4 only; IPv6 is an explicit non-goal).
+
+## Documentation
+
+- [Getting started with ddns and Google Cloud DNS](docs/getting-started-gcp.md) —
+  set up a managed zone, a service account, install the binary, write the
+  config, and run the first reconcile.
+- [Log event taxonomy](docs/log-events.md) — canonical list of every
+  structured log event ddns emits, with required attributes and exit-code
+  mapping.
+
+## Quick start
+
+```sh
+# 1. Install (requires Go 1.26+)
+go install github.com/rootwarp/ddns/cmd/ddns@latest
+
+# 2. Authenticate (one-time, for local testing)
+gcloud auth application-default login
+
+# 3. Write /etc/ddns/config.yaml (see getting-started-gcp.md)
+
+# 4. Dry-run: see what would be written without writing
+ddns sync --config /etc/ddns/config.yaml --dry-run
+
+# 5. First real reconcile
+ddns sync --config /etc/ddns/config.yaml
+
+# 6. As a long-lived daemon with SIGHUP reload
+ddns run --config /etc/ddns/config.yaml
+```
+
+Full step-by-step walk-through: [`docs/getting-started-gcp.md`](docs/getting-started-gcp.md).
 
 ## Integration tests
 
