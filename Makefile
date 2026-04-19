@@ -12,7 +12,10 @@ LDFLAGS := -X github.com/rootwarp/ddns/internal/version.Version=$(VERSION) \
            -X github.com/rootwarp/ddns/internal/version.Commit=$(COMMIT) \
            -X github.com/rootwarp/ddns/internal/version.BuildDate=$(BUILD_DATE)
 
-.PHONY: build test lint install integration-test clean
+COVERAGE_OUT  := coverage.out
+COVERAGE_HTML := coverage.html
+
+.PHONY: build test coverage coverage-html coverage-check lint install integration-test clean
 
 build:
 	@mkdir -p bin
@@ -20,6 +23,32 @@ build:
 
 test:
 	go test ./...
+
+# Run the full suite with coverage, write a machine-readable profile, and print
+# the per-function summary (last line is the project-wide total).
+coverage:
+	go test -covermode=atomic -coverprofile=$(COVERAGE_OUT) ./...
+	@echo ""
+	@echo "=== per-package coverage ==="
+	@go tool cover -func=$(COVERAGE_OUT) | awk '/^total:/ {t=$$0; next} {print} END {print "---"; print t}'
+
+# Produce a clickable HTML report from the profile (run `make coverage` first).
+coverage-html: $(COVERAGE_OUT)
+	go tool cover -html=$(COVERAGE_OUT) -o $(COVERAGE_HTML)
+	@echo "wrote $(COVERAGE_HTML)"
+
+# Fail when project-wide coverage drops below $(COVERAGE_MIN) (default 70 %).
+# Override at the command line: `make coverage-check COVERAGE_MIN=85`.
+COVERAGE_MIN ?= 70
+coverage-check: coverage
+	@total=$$(go tool cover -func=$(COVERAGE_OUT) | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { \
+		if (t+0 < m+0) { printf "coverage %s%% below threshold %s%%\n", t, m; exit 1 } \
+		else           { printf "coverage %s%% meets threshold %s%%\n", t, m } \
+	}'
+
+$(COVERAGE_OUT):
+	@$(MAKE) coverage
 
 lint:
 	go vet ./...
@@ -45,4 +74,4 @@ integration-test:
 	go test -tags=integration ./...
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ $(COVERAGE_OUT) $(COVERAGE_HTML)
