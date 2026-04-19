@@ -66,14 +66,24 @@ func TestRunAction_StubBeforeLoop(t *testing.T) {
 	t.Skip("runAction loop is covered by TestRunSmoke")
 }
 
-func TestSyncAction_ReturnsStubExit1(t *testing.T) {
+// TestSyncAction_NoConfigFlagReturnsError: invoking syncAction in-process
+// without a --config flag means config.Load("") runs → os.ReadFile returns
+// an error → syncAction returns it. This is the lightweight in-process
+// check; the end-to-end exit-code scenarios live in sync_test.go.
+func TestSyncAction_NoConfigFlagReturnsError(t *testing.T) {
 	err := syncAction(context.Background(), &cli.Command{})
-	assertExitCodeErr(t, err, 1)
+	if err == nil {
+		t.Fatalf("syncAction: expected error, got nil")
+	}
 }
 
-func TestStatusAction_ReturnsStubExit1(t *testing.T) {
+// TestStatusAction_NoConfigFlagReturnsError: same shape for status —
+// missing config → error.
+func TestStatusAction_NoConfigFlagReturnsError(t *testing.T) {
 	err := statusAction(context.Background(), &cli.Command{})
-	assertExitCodeErr(t, err, 1)
+	if err == nil {
+		t.Fatalf("statusAction: expected error, got nil")
+	}
 }
 
 func TestNewRootCommand_DeclaresFourSubcommands(t *testing.T) {

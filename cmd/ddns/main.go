@@ -33,7 +33,21 @@ func newRootCommand() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			{Name: "run", Usage: "run the reconciliation daemon", Action: runAction},
-			{Name: "sync", Usage: "run one reconciliation pass and exit", Action: syncAction},
+			{
+				Name:   "sync",
+				Usage:  "run one reconciliation pass and exit",
+				Action: syncAction,
+				Flags: []cli.Flag{
+					// --dry-run is accepted but not honored in Phase 3;
+					// Phase 4 issue 4.1 threads it into ReconcileOnce so
+					// the daemon logs the would-be payload instead of
+					// calling Upsert.
+					&cli.BoolFlag{
+						Name:  "dry-run",
+						Usage: "do not call the provider; log the payload that would be sent (NOT yet honored)",
+					},
+				},
+			},
 			{Name: "status", Usage: "print last-known state", Action: statusAction},
 			{Name: "version", Usage: "print version information", Action: versionAction},
 		},
