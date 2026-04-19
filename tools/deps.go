@@ -9,5 +9,4 @@ package tools
 import (
 	_ "golang.org/x/oauth2"
 	_ "google.golang.org/api/dns/v1"
-	_ "gopkg.in/yaml.v3"
 )
