@@ -40,7 +40,12 @@ func TestRunSmoke(t *testing.T) {
 		t.Fatalf("go build failed: %v", err)
 	}
 
-	cmd := exec.Command(binPath, "run")
+	cmd := exec.Command(binPath, "run", "--config", "./testdata/example.yaml")
+	// DDNS_FAKE_PROVIDER=fake tells runAction to skip gcp.New (which would
+	// fail with ErrAuth on a CI runner with no ADC) and use the in-memory
+	// fake provider instead. See the providerEnvVar doc in cmd/ddns/run.go
+	// for the escape-hatch rationale.
+	cmd.Env = append(os.Environ(), "DDNS_FAKE_PROVIDER=fake")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatalf("StdoutPipe: %v", err)

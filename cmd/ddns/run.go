@@ -2,39 +2,74 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"time"
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/rootwarp/ddns/internal/config"
+	"github.com/rootwarp/ddns/internal/daemon"
+	"github.com/rootwarp/ddns/internal/dnsprovider"
+	"github.com/rootwarp/ddns/internal/dnsprovider/fake"
+	"github.com/rootwarp/ddns/internal/dnsprovider/gcp"
 	"github.com/rootwarp/ddns/internal/logging"
+	"github.com/rootwarp/ddns/internal/resolver"
 )
 
-// noopInterval is the hard-coded tick interval for the Phase-1 no-op loop.
-// Phase 2 (issue 2.6) replaces this with the config's poll_interval.
-const noopInterval = 30 * time.Second
-
-// runAction is the reconciliation daemon entry point. In Phase 1 it is a
-// no-op loop: it logs startup, ticks every 30s emitting tick_noop, and exits
-// cleanly on SIGINT/SIGTERM (ctx cancellation).
+// providerEnvVar is a TEST-ONLY escape hatch. When set to "fake", runAction
+// uses the in-memory dnsprovider/fake instead of constructing a real Google
+// Cloud DNS client via gcp.New. This keeps the Phase 1 smoke test (which
+// spawns the binary for 2s under SIGTERM without ADC) viable after Phase 2
+// makes runAction require a config file and a working provider.
 //
-// Phase 2 replaces the body with the real reconcile loop wired to the
-// resolver, provider, and state store; the test smoke shape remains the same
-// so the CI smoke step is stable across phases.
+// The env var is intentionally NOT documented in user-facing help. Only the
+// smoke test (cmd/ddns/run_smoke_test.go) and the CI workflow set it. Any
+// value other than "" and "fake" is rejected to avoid silent test-shape
+// regressions.
+const providerEnvVar = "DDNS_FAKE_PROVIDER"
+
+// runAction loads config, builds the resolver / provider / daemon wiring,
+// and enters the reconcile loop. Errors returned here propagate to main()
+// which maps them through exitCodeFor — config errors exit 3, auth errors
+// exit 3, transient provider errors exit 2, etc.
 func runAction(ctx context.Context, cmd *cli.Command) error {
-	logger := logging.NewLogger(cmd.String("log-format"), os.Stdout)
-	logger.Info("startup", "interval", noopInterval.String(), "mode", "no-op")
+	cfg, err := config.Load(cmd.String("config"))
+	if err != nil {
+		return err
+	}
 
-	ticker := time.NewTicker(noopInterval)
-	defer ticker.Stop()
+	// Build the root logger. `record` is attached now (it's per-config
+	// invariant); Phase 3 may add per-tick record attrs when multi-record
+	// support lands.
+	logger := logging.
+		NewLogger(cfg.LogFormat, os.Stdout).
+		With("record", cfg.Records[0].Name)
 
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info("shutdown", "reason", ctx.Err().Error())
-			return nil
-		case t := <-ticker.C:
-			logger.Info("tick_noop", "at", t.Format(time.RFC3339))
-		}
+	logger.Info("startup",
+		"poll_interval", cfg.PollInterval.String(),
+		"config", cfg.Path(),
+	)
+
+	provider, err := buildProvider(ctx)
+	if err != nil {
+		return err
+	}
+
+	res := resolver.New(cfg.Resolver)
+	d := daemon.New(cfg, res, provider, logger)
+	return d.Run(ctx)
+}
+
+// buildProvider returns either the real GCP provider or — when
+// DDNS_FAKE_PROVIDER=fake — an in-memory fake. See the comment on
+// providerEnvVar for why this seam exists.
+func buildProvider(ctx context.Context) (dnsprovider.DNSProvider, error) {
+	switch v := os.Getenv(providerEnvVar); v {
+	case "":
+		return gcp.New(ctx)
+	case "fake":
+		return fake.New(), nil
+	default:
+		return nil, fmt.Errorf("invalid %s=%q (only %q or unset allowed)", providerEnvVar, v, "fake")
 	}
 }

@@ -64,8 +64,14 @@ jobs:
 
       - name: Smoke — run SIGTERM exits cleanly
         shell: bash
+        # Phase 2 makes `ddns run` require a --config and a reachable DNS
+        # provider. DDNS_FAKE_PROVIDER=fake is a test-only escape hatch in
+        # cmd/ddns/run.go that swaps in the in-memory provider so the smoke
+        # step stays green on runners with no Google ADC.
+        env:
+          DDNS_FAKE_PROVIDER: fake
         run: |
-          ./bin/ddns run &
+          ./bin/ddns run --config cmd/ddns/testdata/example.yaml &
           PID=$!
           sleep 2
           kill -TERM "$PID"
